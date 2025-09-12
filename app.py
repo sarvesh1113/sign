@@ -25,13 +25,6 @@ SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 Base = declarative_base()
 
-# For PostgreSQL, ensure UUID extension is enabled
-@event.listens_for(engine, "connect")
-def set_sqlite_pragma(dbapi_connection, connection_record):
-    if "postgresql" in DATABASE_URL:
-        with dbapi_connection.cursor() as cursor:
-            cursor.execute('CREATE EXTENSION IF NOT EXISTS "uuid-ossp"')
-
 # Models
 class Tenant(Base):
     __tablename__ = "tenants"
@@ -74,18 +67,35 @@ class SentEmailLog(Base):
     signature_used = Column(UUID(as_uuid=True), ForeignKey("signature_templates.id"))
     sent_at = Column(DateTime, default=datetime.utcnow)
 
-# Create tables
+# Create tables with better error handling
 def create_tables():
     try:
         # For PostgreSQL, ensure UUID extension is enabled
         if "postgresql" in os.getenv("DATABASE_URL", ""):
-            with engine.connect() as conn:
-                conn.execute(text('CREATE EXTENSION IF NOT EXISTS "uuid-ossp"'))
-                conn.commit()
+            try:
+                with engine.connect() as conn:
+                    conn.execute(text('CREATE EXTENSION IF NOT EXISTS "uuid-ossp"'))
+                    conn.commit()
+                    print("UUID extension created/verified")
+            except Exception as e:
+                print(f"Warning: Could not create UUID extension: {e}")
+        
+        # Create all tables
         Base.metadata.create_all(bind=engine)
-        print("Tables created successfully")
+        print("All tables created successfully")
+        
+        # Verify tables exist
+        try:
+            with engine.connect() as conn:
+                result = conn.execute(text("SELECT table_name FROM information_schema.tables WHERE table_schema = 'public'"))
+                tables = [row[0] for row in result]
+                print(f"Existing tables: {tables}")
+        except Exception as e:
+            print(f"Could not verify tables: {e}")
+            
     except Exception as e:
         print(f"Error creating tables: {e}")
+        raise e
 
 # FastAPI app
 app = FastAPI()
@@ -102,7 +112,9 @@ app.add_middleware(
 # Create tables
 @app.on_event("startup")
 async def startup_event():
+    print("Starting up... Creating tables")
     create_tables()
+    print("Startup complete")
 
 # MSAL Config
 CLIENT_ID = os.getenv("CLIENT_ID")
@@ -125,13 +137,24 @@ def get_db():
 
 # Helper to get or create tenant
 def get_or_create_tenant(db: Session, azure_tenant_id: str):
-    tenant = db.query(Tenant).filter(Tenant.azure_tenant_id == azure_tenant_id).first()
-    if not tenant:
-        tenant = Tenant(azure_tenant_id=azure_tenant_id)
-        db.add(tenant)
-        db.commit()
-        db.refresh(tenant)
-    return tenant
+    # First, let's verify the table structure
+    try:
+        tenant = db.query(Tenant).filter(Tenant.azure_tenant_id == azure_tenant_id).first()
+        if not tenant:
+            tenant = Tenant(azure_tenant_id=azure_tenant_id)
+            db.add(tenant)
+            db.commit()
+            db.refresh(tenant)
+        return tenant
+    except Exception as e:
+        print(f"Error in get_or_create_tenant: {e}")
+        # Try to recreate tables if they don't exist
+        try:
+            Base.metadata.create_all(bind=engine)
+            print("Retried table creation")
+        except Exception as retry_error:
+            print(f"Retry failed: {retry_error}")
+        raise e
 
 # Authentication Endpoints
 
