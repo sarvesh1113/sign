@@ -16,6 +16,8 @@ from datetime import datetime
 from dotenv import load_dotenv
 from string import Template
 import logging
+import psycopg
+from sqlalchemy.dialects.postgresql import psycopg as psycopg_dialect
 
 # Load environment variables
 load_dotenv()
@@ -29,7 +31,7 @@ DATABASE_URL = os.getenv("DATABASE_URL")
 if not DATABASE_URL:
     raise ValueError("DATABASE_URL must be set in environment variables")
 
-engine = create_engine(DATABASE_URL)
+engine = create_engine(DATABASE_URL, echo=True)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
@@ -364,3 +366,4 @@ if __name__ == "__main__":
     import uvicorn
     port = int(os.getenv("PORT", 8000))
     uvicorn.run(app, host="0.0.0.0", port=port, reload=False)  # No reload on Render
+
