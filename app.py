@@ -80,6 +80,27 @@ def create_tables():
             except Exception as e:
                 print(f"Warning: Could not create UUID extension: {e}")
         
+        # Check if tables exist and have correct structure
+        try:
+            with engine.connect() as conn:
+                # Check if tenants table exists and has correct columns
+                result = conn.execute(text("""
+                    SELECT column_name, data_type 
+                    FROM information_schema.columns 
+                    WHERE table_name = 'tenants' AND table_schema = 'public'
+                """))
+                columns = {row[0]: row[1] for row in result}
+                print(f"Existing tenants table columns: {columns}")
+                
+                # If table exists but doesn't have required columns, we might need to drop and recreate
+                required_columns = ['id', 'azure_tenant_id']
+                missing_columns = [col for col in required_columns if col not in columns]
+                
+                if missing_columns:
+                    print(f"Missing columns in tenants table: {missing_columns}")
+        except Exception as e:
+            print(f"Could not inspect tenants table: {e}")
+        
         # Create all tables
         Base.metadata.create_all(bind=engine)
         print("All tables created successfully")
@@ -95,6 +116,18 @@ def create_tables():
             
     except Exception as e:
         print(f"Error creating tables: {e}")
+        raise e
+
+# Force recreate tables function
+def recreate_tables():
+    try:
+        print("Dropping all tables...")
+        Base.metadata.drop_all(bind=engine)
+        print("Creating all tables...")
+        Base.metadata.create_all(bind=engine)
+        print("Tables recreated successfully")
+    except Exception as e:
+        print(f"Error recreating tables: {e}")
         raise e
 
 # FastAPI app
@@ -115,6 +148,12 @@ async def startup_event():
     print("Starting up... Creating tables")
     create_tables()
     print("Startup complete")
+
+# Add an endpoint to recreate tables (FOR DEVELOPMENT ONLY - REMOVE IN PRODUCTION)
+@app.post("/recreate-tables")
+def recreate_tables_endpoint():
+    recreate_tables()
+    return {"message": "Tables recreated successfully"}
 
 # MSAL Config
 CLIENT_ID = os.getenv("CLIENT_ID")
@@ -152,6 +191,14 @@ def get_or_create_tenant(db: Session, azure_tenant_id: str):
         try:
             Base.metadata.create_all(bind=engine)
             print("Retried table creation")
+            # Try the query again
+            tenant = db.query(Tenant).filter(Tenant.azure_tenant_id == azure_tenant_id).first()
+            if not tenant:
+                tenant = Tenant(azure_tenant_id=azure_tenant_id)
+                db.add(tenant)
+                db.commit()
+                db.refresh(tenant)
+            return tenant
         except Exception as retry_error:
             print(f"Retry failed: {retry_error}")
         raise e
