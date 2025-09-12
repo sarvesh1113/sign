@@ -4,19 +4,92 @@ import requests
 from fastapi import FastAPI, Depends, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse
-from sqlalchemy.orm import Session
+from sqlalchemy import create_engine, event, Column, String, Text, DateTime, ForeignKey, JSON
+from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy.orm import sessionmaker, Session
 from msal import ConfidentialClientApplication  # For auth code flow
 from pydantic import BaseModel
 from datetime import datetime
-from database import SessionLocal, engine
-from models import Base, Tenant, User, SignatureTemplate, SentEmailLog
-import json
 from dotenv import load_dotenv
 from string import Template  # For placeholder replacement
 
+# Load environment variables
 load_dotenv()
 
+# Database setup
+DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///app.db")
+
+engine = create_engine(DATABASE_URL)
+SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+
+Base = declarative_base()
+
+# For PostgreSQL, ensure UUID extension is enabled
+@event.listens_for(engine, "connect")
+def set_sqlite_pragma(dbapi_connection, connection_record):
+    if "postgresql" in DATABASE_URL:
+        with dbapi_connection.cursor() as cursor:
+            cursor.execute('CREATE EXTENSION IF NOT EXISTS "uuid-ossp"')
+
+# Models
+class Tenant(Base):
+    __tablename__ = "tenants"
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    name = Column(String)
+    azure_tenant_id = Column(String, unique=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+class User(Base):
+    __tablename__ = "users"
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    tenant_id = Column(UUID(as_uuid=True), ForeignKey("tenants.id"))
+    azure_user_id = Column(String, unique=True)
+    display_name = Column(String)
+    email = Column(String)
+    job_title = Column(String)
+    department = Column(String)
+    groups = Column(JSON)  # List of {"id": "", "displayName": ""}
+    access_token = Column(Text)  # Encrypt in production
+    refresh_token = Column(Text)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+class SignatureTemplate(Base):
+    __tablename__ = "signature_templates"
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    tenant_id = Column(UUID(as_uuid=True), ForeignKey("tenants.id"))
+    name = Column(String)
+    html_template = Column(Text)  # e.g., "<p>{{displayName}} - {{jobTitle}}</p>"
+    rules = Column(JSON)  # e.g., {"department": "sales"}
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+class SentEmailLog(Base):
+    __tablename__ = "sent_email_logs"
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    tenant_id = Column(UUID(as_uuid=True), ForeignKey("tenants.id"))
+    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id"))
+    to_email = Column(String)
+    subject = Column(String)
+    body_preview = Column(Text)
+    signature_used = Column(UUID(as_uuid=True), ForeignKey("signature_templates.id"))
+    sent_at = Column(DateTime, default=datetime.utcnow)
+
+# Create tables
+def create_tables():
+    try:
+        # For PostgreSQL, ensure UUID extension is enabled
+        if "postgresql" in os.getenv("DATABASE_URL", ""):
+            with engine.connect() as conn:
+                conn.execute('CREATE EXTENSION IF NOT EXISTS "uuid-ossp"')
+                conn.commit()
+        Base.metadata.create_all(bind=engine)
+        print("Tables created successfully")
+    except Exception as e:
+        print(f"Error creating tables: {e}")
+
+# FastAPI app
 app = FastAPI()
+
 # Add CORS middleware
 app.add_middleware(
     CORSMiddleware,
@@ -25,8 +98,9 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
 # Create tables
-Base.metadata.create_all(bind=engine)
+create_tables()
 
 # MSAL Config
 CLIENT_ID = os.getenv("CLIENT_ID")
@@ -124,7 +198,7 @@ def sync_user_data(user_id: uuid.UUID, db: Session):
 
     headers = {"Authorization": f"Bearer {user.access_token}"}
 
-    # GET /
+    # GET /me
     try:
         profile_resp = requests.get("https://graph.microsoft.com/v1.0/me?$select=displayName,mail,jobTitle,department", headers=headers)
         profile_resp.raise_for_status()
@@ -290,5 +364,4 @@ def send_email(email: EmailSend, user_id: str, db: Session = Depends(get_db)):
 # @app.get("/analytics") - Query AnalyticsEvent filtered by tenant_id
 # For tracking: Host a /track endpoint that logs GET requests with query params.
 
-# Run: uvicorn app:app --reload
-
+# Run: uvicorn main:app --reload
