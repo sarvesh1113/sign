@@ -4,7 +4,7 @@ import requests
 from fastapi import FastAPI, Depends, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse
-from sqlalchemy import create_engine, event, Column, String, Text, DateTime, ForeignKey, JSON
+from sqlalchemy import create_engine, event, Column, String, Text, DateTime, ForeignKey, JSON, text
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, Session
@@ -80,7 +80,7 @@ def create_tables():
         # For PostgreSQL, ensure UUID extension is enabled
         if "postgresql" in os.getenv("DATABASE_URL", ""):
             with engine.connect() as conn:
-                conn.execute('CREATE EXTENSION IF NOT EXISTS "uuid-ossp"')
+                conn.execute(text('CREATE EXTENSION IF NOT EXISTS "uuid-ossp"'))
                 conn.commit()
         Base.metadata.create_all(bind=engine)
         print("Tables created successfully")
@@ -367,4 +367,3 @@ def send_email(email: EmailSend, user_id: str, db: Session = Depends(get_db)):
 # For tracking: Host a /track endpoint that logs GET requests with query params.
 
 # Run: uvicorn main:app --reload
-
