@@ -2,6 +2,7 @@ import os
 import uuid
 import requests
 import json
+import time  # For retries
 from fastapi import FastAPI, Depends, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse
@@ -14,58 +15,58 @@ from pydantic import BaseModel
 from datetime import datetime
 from dotenv import load_dotenv
 from string import Template
-import logging  # For Render logs
+import logging
 
 # Load environment variables
 load_dotenv()
 
-# Logging for Render (visible in heroku logs --tail equivalent)
+# Logging for Render (visible in dashboard logs)
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # Database setup (inlined)
 DATABASE_URL = os.getenv("DATABASE_URL")
 if not DATABASE_URL:
-    raise ValueError("DATABASE_URL not set in environment variables")
+    raise ValueError("DATABASE_URL must be set in environment variables")
 
 engine = create_engine(DATABASE_URL)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
-# Database models (inlined)
+# Database models (inlined, id as String for simplicity)
 class Tenant(Base):
     __tablename__ = "tenants"
-    id = Column(String, primary_key=True, default=str(uuid.uuid4()))  # String for Render/Postgres simplicity
+    id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
     name = Column(String)
     azure_tenant_id = Column(String, unique=True)
     created_at = Column(DateTime, default=datetime.utcnow)
 
 class User(Base):
     __tablename__ = "users"
-    id = Column(String, primary_key=True, default=str(uuid.uuid4()))
+    id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
     tenant_id = Column(String, ForeignKey("tenants.id"))
     azure_user_id = Column(String, unique=True)
     display_name = Column(String)
     email = Column(String)
     job_title = Column(String)
     department = Column(String)
-    groups = Column(JSON)  # List of {"id": "", "displayName": ""}
+    groups = Column(JSON)
     access_token = Column(Text)
     refresh_token = Column(Text)
     created_at = Column(DateTime, default=datetime.utcnow)
 
 class SignatureTemplate(Base):
     __tablename__ = "signature_templates"
-    id = Column(String, primary_key=True, default=str(uuid.uuid4()))
+    id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
     tenant_id = Column(String, ForeignKey("tenants.id"))
     name = Column(String)
     html_template = Column(Text)
-    rules = Column(JSON)  # e.g., {"department": "sales"}
+    rules = Column(JSON)
     created_at = Column(DateTime, default=datetime.utcnow)
 
 class SentEmailLog(Base):
     __tablename__ = "sent_email_logs"
-    id = Column(String, primary_key=True, default=str(uuid.uuid4()))
+    id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
     tenant_id = Column(String, ForeignKey("tenants.id"))
     user_id = Column(String, ForeignKey("users.id"))
     to_email = Column(String)
@@ -80,30 +81,33 @@ app = FastAPI()
 # CORS
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Adjust for production
+    allow_origins=["*"],  # Restrict in production
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# Robust table creation on startup
+# Robust table creation on startup with retries
 @app.on_event("startup")
 async def startup_event():
-    logger.info("Starting app and creating tables...")
-    max_retries = 3
+    logger.info("App starting: Creating tables...")
+    max_retries = 5
     for attempt in range(max_retries):
         try:
             Base.metadata.create_all(bind=engine)
-            logger.info("Tables created successfully.")
+            logger.info(f"Tables created successfully on attempt {attempt + 1}.")
+            # Verify by querying a simple table
+            with SessionLocal() as session:
+                result = session.execute("SELECT 1 FROM tenants LIMIT 1").fetchone()
+            logger.info("Table verification successful.")
             break
         except (ProgrammingError, OperationalError) as e:
             logger.warning(f"Table creation attempt {attempt + 1} failed: {e}")
-            if attempt == max_retries - 1:
-                logger.error("Failed to create tables after retries. Check DATABASE_URL and permissions.")
-                raise
-            # Wait before retry
-            import time
-            time.sleep(5)
+            if attempt < max_retries - 1:
+                time.sleep(10)  # Wait 10s before retry
+            else:
+                logger.error("Failed to create tables after all retries. Check DATABASE_URL, permissions, and RDS security group.")
+                raise RuntimeError("Database initialization failed")
 
 # MSAL Config
 CLIENT_ID = os.getenv("CLIENT_ID")
@@ -113,7 +117,7 @@ if not CLIENT_ID or not CLIENT_SECRET:
 
 AUTHORITY = "https://login.microsoftonline.com/common"
 SCOPES = ["https://graph.microsoft.com/User.Read", "https://graph.microsoft.com/GroupMember.Read.All", "https://graph.microsoft.com/Mail.Send"]
-REDIRECT_URI = "https://sign-gbl9.onrender.com/auth/callback"
+REDIRECT_URI = "https://sign-gbl9.onrender.com/auth/callback/auth/callback"
 
 msal_app = ConfidentialClientApplication(
     CLIENT_ID, authority=AUTHORITY, client_credential=CLIENT_SECRET
@@ -127,7 +131,7 @@ def get_db():
     finally:
         db.close()
 
-# Helper to get or create tenant (use String for id to avoid UUID import issues on Render)
+# Helper to get or create tenant
 def get_or_create_tenant(db: Session, azure_tenant_id: str):
     tenant = db.query(Tenant).filter(Tenant.azure_tenant_id == azure_tenant_id).first()
     if not tenant:
@@ -135,7 +139,7 @@ def get_or_create_tenant(db: Session, azure_tenant_id: str):
         db.add(tenant)
         db.commit()
         db.refresh(tenant)
-        logger.info(f"Created new tenant: {tenant.id}")
+        logger.info(f"Created tenant {tenant.id}")
     return tenant
 
 # Authentication Endpoints
@@ -177,9 +181,9 @@ def auth_callback(request: Request, code: str, db: Session = Depends(get_db)):
     db.commit()
     db.refresh(user)
 
-    logger.info(f"User {azure_user_id} authenticated in tenant {azure_tenant_id}")
+    logger.info(f"User {azure_user_id} authenticated")
 
-    sync_user_data(str(user.id), db)  # Pass as str for safety
+    sync_user_data(str(user.id), db)
 
     return {"message": "Authenticated successfully", "user_id": str(user.id)}
 
@@ -187,12 +191,12 @@ def refresh_access_token(user: User):
     result = msal_app.acquire_token_by_refresh_token(user.refresh_token, scopes=SCOPES)
     if "error" in result:
         logger.error(f"Token refresh failed: {result.get('error_description')}")
-        raise HTTPException(status_code=401, detail="Token refresh failed: " + result.get("error_description"))
+        raise HTTPException(status_code=401, detail="Token refresh failed")
     user.access_token = result["access_token"]
     user.refresh_token = result.get("refresh_token")
 
-# Directory Synchronization (Fixed /me retry)
-def sync_user_data(user_id: str, db: Session):  # Accept str for flexibility
+# Directory Synchronization (Fixed retry to /me)
+def sync_user_data(user_id: str, db: Session):
     user = db.query(User).filter(User.id == user_id).first()
     if not user:
         logger.warning(f"User {user_id} not found for sync")
@@ -209,12 +213,12 @@ def sync_user_data(user_id: str, db: Session):  # Accept str for flexibility
         user.email = profile.get("mail")
         user.job_title = profile.get("jobTitle")
         user.department = profile.get("department")
-        logger.info(f"Synced profile for {user.email}: {user.display_name}, {user.department}")
+        logger.info(f"Synced profile for {user.email}")
     except requests.exceptions.HTTPError as e:
         if e.response.status_code == 401:
             refresh_access_token(user)
             headers["Authorization"] = f"Bearer {user.access_token}"
-            profile_resp = requests.get("https://graph.microsoft.com/v1.0/me?$select=displayName,mail,jobTitle,department", headers=headers)  # Fixed: Use /me, not /users
+            profile_resp = requests.get("https://graph.microsoft.com/v1.0/me?$select=displayName,mail,jobTitle,department", headers=headers)  # Fixed: /me
             profile_resp.raise_for_status()
             profile = profile_resp.json()
             user.display_name = profile.get("displayName")
@@ -223,7 +227,7 @@ def sync_user_data(user_id: str, db: Session):  # Accept str for flexibility
             user.department = profile.get("department")
         else:
             logger.error(f"Profile sync error: {e}")
-            raise HTTPException(status_code=500, detail="Graph API error: " + str(e))
+            raise HTTPException(status_code=500, detail=str(e))
 
     # GET /me/memberOf
     try:
@@ -237,7 +241,7 @@ def sync_user_data(user_id: str, db: Session):  # Accept str for flexibility
             pass
         else:
             logger.error(f"Groups sync error: {e}")
-            raise HTTPException(status_code=500, detail="Graph API error for groups: " + str(e))
+            raise HTTPException(status_code=500, detail=str(e))
 
     db.commit()
 
@@ -261,7 +265,7 @@ def create_template(template: TemplateCreate, user_id: str, db: Session = Depend
     db.add(db_template)
     db.commit()
     db.refresh(db_template)
-    logger.info(f"Created template {db_template.id} for tenant {user.tenant_id}")
+    logger.info(f"Created template {db_template.id}")
     return db_template
 
 @app.get("/templates")
@@ -270,7 +274,7 @@ def list_templates(user_id: str, db: Session = Depends(get_db)):
     if not user:
         raise HTTPException(404, "User not found")
     templates = db.query(SignatureTemplate).filter(SignatureTemplate.tenant_id == user.tenant_id).all()
-    logger.info(f"Listed {len(templates)} templates for user {user_id}")
+    logger.info(f"Listed {len(templates)} templates")
     return templates
 
 # Email Sending Flow
@@ -325,9 +329,9 @@ def send_email(email: EmailSend, user_id: str, db: Session = Depends(get_db)):
         "saveToSentItems": True
     }
     try:
-        logger.info(f"Sending email from {user.email} to {email.to}")
+        logger.info(f"Sending email to {email.to}")
         resp = requests.post("https://graph.microsoft.com/v1.0/me/sendMail", headers=headers, json=payload)
-        logger.info(f"Graph API Response: Status={resp.status_code}, Body={resp.text}")
+        logger.info(f"Send response: {resp.status_code} - {resp.text}")
         resp.raise_for_status()
     except requests.exceptions.HTTPError as e:
         if e.response.status_code == 401:
@@ -335,11 +339,11 @@ def send_email(email: EmailSend, user_id: str, db: Session = Depends(get_db)):
             db.commit()
             headers["Authorization"] = f"Bearer {user.access_token}"
             resp = requests.post("https://graph.microsoft.com/v1.0/me/sendMail", headers=headers, json=payload)
-            logger.info(f"Retry Response: Status={resp.status_code}, Body={resp.text}")
+            logger.info(f"Retry response: {resp.status_code} - {resp.text}")
             resp.raise_for_status()
         else:
             logger.error(f"SendMail error: {e}")
-            raise HTTPException(500, "Graph API sendMail error: " + str(e))
+            raise HTTPException(500, str(e))
 
     log = SentEmailLog(
         tenant_id=user.tenant_id,
@@ -353,9 +357,10 @@ def send_email(email: EmailSend, user_id: str, db: Session = Depends(get_db)):
     db.add(log)
     db.commit()
 
-    logger.info(f"Email logged for {email.to}")
+    logger.info(f"Email sent and logged")
     return {"message": "Email sent successfully"}
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=int(os.getenv("PORT", 8000)), reload=False)  # No reload on Render
+    port = int(os.getenv("PORT", 8000))
+    uvicorn.run(app, host="0.0.0.0", port=port, reload=False)  # No reload on Render
