@@ -33,7 +33,7 @@ CLIENT_ID = os.getenv("CLIENT_ID")
 CLIENT_SECRET = os.getenv("CLIENT_SECRET")
 AUTHORITY = "https://login.microsoftonline.com/common"
 SCOPES = ["https://graph.microsoft.com/User.Read", "https://graph.microsoft.com/GroupMember.Read.All", "https://graph.microsoft.com/Mail.Send"]
-REDIRECT_URI = " https://nonchafing-philip-unsuggested.ngrok-free.app/auth/callback"  # Match app registration
+REDIRECT_URI = "https://sign-gbl9.onrender.com/auth/callback"  # Match app registration
 
 msal_app = ConfidentialClientApplication(
     CLIENT_ID, authority=AUTHORITY, client_credential=CLIENT_SECRET
@@ -291,3 +291,4 @@ def send_email(email: EmailSend, user_id: str, db: Session = Depends(get_db)):
 # For tracking: Host a /track endpoint that logs GET requests with query params.
 
 # Run: uvicorn app:app --reload
+
