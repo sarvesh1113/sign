@@ -1,4 +1,5 @@
 import os
+import uuid
 import requests
 import json
 from fastapi import FastAPI, Depends, HTTPException, Request
@@ -13,19 +14,16 @@ import logging
 # Load environment variables
 load_dotenv()
 
-# Logging
+# Logging for Render
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
-
-# Skip DB for testing - No SQLAlchemy/psycopg imports
-# Later: Uncomment and add back DB code
 
 app = FastAPI()
 
 # CORS
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["*"],  # Restrict in production
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -39,14 +37,14 @@ if not CLIENT_ID or not CLIENT_SECRET:
 
 AUTHORITY = "https://login.microsoftonline.com/common"
 SCOPES = ["https://graph.microsoft.com/User.Read", "https://graph.microsoft.com/GroupMember.Read.All", "https://graph.microsoft.com/Mail.Send"]
-REDIRECT_URI = "https://sign-gbl9.onrender.com/auth/callback"
+REDIRECT_URI = os.getenv("REDIRECT_URI", "https://nonchafing-philip-unsuggested.ngrok-free.app/auth/callback")
 
 msal_app = ConfidentialClientApplication(
     CLIENT_ID, authority=AUTHORITY, client_credential=CLIENT_SECRET
 )
 
-# In-memory user storage for testing (no DB)
-users = {}  # {user_id: {'access_token': str, 'display_name': str, 'email': str, 'department': str, 'groups': list}}
+# In-memory user storage (no DB)
+users = {}  # {user_id: {'access_token': str, 'refresh_token': str, 'display_name': str, 'email': str, 'department': str}}
 
 # Authentication Endpoints
 @app.get("/auth/login")
@@ -68,25 +66,20 @@ def auth_callback(request: Request, code: str):
     refresh_token = result.get("refresh_token")
     id_token_claims = result["id_token_claims"]
     azure_user_id = id_token_claims["oid"]
-    azure_tenant_id = id_token_claims["tid"]
-    display_name = id_token_claims.get("name", "Unknown")
-    email = id_token_claims.get("preferred_username", "unknown@example.com")
+    display_name = id_token_claims.get("name", "Test User")
+    email = id_token_claims.get("preferred_username", "test@example.com")
 
-    # Hardcode department and groups for testing (skip sync)
     user_id = str(uuid.uuid4())
     users[user_id] = {
         'access_token': access_token,
         'refresh_token': refresh_token,
         'display_name': display_name,
         'email': email,
-        'department': 'Sales',  # Hardcode; later from Graph
-        'groups': [{'id': 'test-group', 'displayName': 'Test Group'}]  # Hardcode
+        'department': 'Sales'  # Hardcoded for testing
     }
 
     logger.info(f"User {azure_user_id} authenticated with token")
     print(f"Access Token (first 50 chars): {access_token[:50]}...")  # Debug
-
-    # Skip DB sync for testing - Hardcode data above
 
     return {"message": "Authenticated successfully", "user_id": user_id}
 
@@ -99,9 +92,7 @@ def refresh_access_token(user_data: dict):
     user_data['access_token'] = result["access_token"]
     user_data['refresh_token'] = result.get("refresh_token")
 
-# Skip sync_user_data - Data hardcoded in auth
-
-# Signature Template Management (Skipped for testing - Hardcode in send_email)
+# Signature Template Management (Simulated for testing)
 class TemplateCreate(BaseModel):
     name: str
     html_template: str
@@ -109,13 +100,11 @@ class TemplateCreate(BaseModel):
 
 @app.post("/templates")
 def create_template(template: TemplateCreate, user_id: str):
-    # Skip DB - Just log for now
     logger.info(f"Template created (test): {template.name}")
-    return {"message": "Template created (DB skipped for testing)", "template_id": str(uuid.uuid4())}
+    return {"message": "Template created (no DB)", "template_id": str(uuid.uuid4())}
 
 @app.get("/templates")
 def list_templates(user_id: str):
-    # Skip DB - Return dummy
     return [{"id": "test", "name": "Test Template", "rules": {"department": "Sales"}}]
 
 # Email Sending Flow
@@ -126,17 +115,15 @@ class EmailSend(BaseModel):
 
 @app.post("/send_email")
 def send_email(email: EmailSend, user_id: str):
-    """Send email with hardcoded signature (DB skipped)."""
     if user_id not in users:
         raise HTTPException(404, "User not found")
 
     user_data = users[user_id]
     access_token = user_data['access_token']
 
-    # Hardcode signature template for testing (skip DB query)
+    # Hardcoded signature for testing (no DB query)
     sig_html = f"""
-    <p>{user_data['display_name']} | {user_data['job_title'] or 'Test Role'} | {user_data['department']}</p>
-    <p>Email: {user_data['email']}</p>
+    <p>{user_data['display_name']} | Sales | {user_data['email']}</p>
     <hr>
     <p>Best regards,<br>Aqeeq Technologies</p>
     """
