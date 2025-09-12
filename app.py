@@ -100,7 +100,9 @@ app.add_middleware(
 )
 
 # Create tables
-create_tables()
+@app.on_event("startup")
+async def startup_event():
+    create_tables()
 
 # MSAL Config
 CLIENT_ID = os.getenv("CLIENT_ID")
@@ -365,3 +367,4 @@ def send_email(email: EmailSend, user_id: str, db: Session = Depends(get_db)):
 # For tracking: Host a /track endpoint that logs GET requests with query params.
 
 # Run: uvicorn main:app --reload
+
