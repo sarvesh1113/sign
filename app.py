@@ -18,8 +18,7 @@ from email.mime.text import MIMEText
 from string import Template
 from base64 import b64decode
 import requests
-from sqlalchemy import select
-import uuid
+
 load_dotenv()
 
 app = FastAPI()
@@ -46,8 +45,6 @@ class Tenant(Base):
     __tablename__ = "tenants"
     id = Column(Integer, primary_key=True, index=True)
     azure_tenant_id = Column(String, unique=True)
-    access_token = Column(Text)
-    refresh_token = Column(Text)
     token_expires = Column(DateTime)
 
 class User(Base):
@@ -60,6 +57,8 @@ class User(Base):
     department = Column(String)
     groups = Column(JSON)
     tenant_id = Column(Integer, ForeignKey("tenants.id"))
+    access_token = Column(Text)  # Added
+    refresh_token = Column(Text)  # Added
     tenant = relationship("Tenant")
 
 class SignatureTemplate(Base):
@@ -199,7 +198,9 @@ async def forward_email(access_token: str, from_email: str, to_emails: list, pro
 @app.get("/auth/login")
 async def login(request: Request):
     """Initiate OAuth authorization code flow and create/retrieve tenant."""
+    print(f"CLIENT_ID: {CLIENT_ID}")  # Debug
     auth_url = msal_app.get_authorization_request_url(SCOPES, redirect_uri=REDIRECT_URI)
+    print(f"Generated auth URL: {auth_url}")  # Debug
     return RedirectResponse(auth_url)
 
 @app.get("/auth/callback")
@@ -341,5 +342,3 @@ if __name__ == "__main__":
     import uvicorn
     port = int(os.getenv("PORT", 8000))
     uvicorn.run(app, host="0.0.0.0", port=port)
-
-
