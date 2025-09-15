@@ -45,13 +45,13 @@ async def get_db():
 # Models
 class Tenant(Base):
     __tablename__ = "tenants"
-    id = Column(Integer, primary_key=True, index=True)
+    id = Column(String, primary_key=True, index=True,default=lambda: str(uuid.uuid4()))
     azure_tenant_id = Column(String, unique=True)
     token_expires = Column(DateTime)
 
 class User(Base):
     __tablename__ = "users"
-    id = Column(Integer, primary_key=True, index=True)
+    id = Column(String, primary_key=True, index=True, default=lambda: str(uuid.uuid4()))
     azure_user_id = Column(String, unique=True)
     display_name = Column(String)
     email = Column(String)
@@ -65,7 +65,7 @@ class User(Base):
 
 class SignatureTemplate(Base):
     __tablename__ = "signature_templates"
-    id = Column(Integer, primary_key=True, index=True)
+    id = Column(String, primary_key=True, index=True, default=lambda: str(uuid.uuid4()))
     tenant_id = Column(Integer, ForeignKey("tenants.id"))
     name = Column(String)
     html_template = Column(Text)
@@ -344,5 +344,6 @@ if __name__ == "__main__":
     import uvicorn
     port = int(os.getenv("PORT", 8000))
     uvicorn.run(app, host="0.0.0.0", port=port)
+
 
 
