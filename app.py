@@ -35,7 +35,6 @@ Base = declarative_base()
 DATABASE_URL = os.getenv("DATABASE_URL", "sqlite+aiosqlite:///./test.db")
 engine = create_async_engine(DATABASE_URL)
 AsyncSessionLocal = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
-Base.metadata.create_all(bind=engine)
 
 async def get_db():
     async with AsyncSessionLocal() as session:
@@ -75,7 +74,7 @@ CLIENT_ID = os.getenv("CLIENT_ID")
 CLIENT_SECRET = os.getenv("CLIENT_SECRET")
 AUTHORITY = "https://login.microsoftonline.com/common"
 SCOPES = ["https://graph.microsoft.com/User.Read", "https://graph.microsoft.com/GroupMember.Read.All", "https://graph.microsoft.com/Mail.Send"]
-REDIRECT_URI = os.getenv("REDIRECT_URI")  # Set in env for Render
+REDIRECT_URI = os.getenv("REDIRECT_URI", "http://localhost:8000/auth/callback")  # Set in env for Render
 
 msal_app = ConfidentialClientApplication(CLIENT_ID, authority=AUTHORITY, client_credential=CLIENT_SECRET)
 
@@ -332,6 +331,8 @@ async def start_smtp():
 
 @app.on_event("startup")
 async def startup():
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
     if os.getenv("ENV", "local") != "render":
         await start_smtp()
 
