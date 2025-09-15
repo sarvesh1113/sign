@@ -12,13 +12,6 @@ from msal import ConfidentialClientApplication
 from pydantic import BaseModel
 from typing import List
 from datetime import datetime
-from msgraph.generated.models.message import Message
-from msgraph.generated.models.body_type import BodyType
-from msgraph.generated.models.recipient import Recipient
-from msgraph.generated.models.email_address import EmailAddress
-from msgraph.generated.models.message_body import MessageBody
-from msgraph import GraphServiceClient
-from azure.identity import ClientSecretCredential
 from email.parser import BytesParser
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
@@ -82,7 +75,7 @@ CLIENT_ID = os.getenv("CLIENT_ID")
 CLIENT_SECRET = os.getenv("CLIENT_SECRET")
 AUTHORITY = "https://login.microsoftonline.com/common"
 SCOPES = ["https://graph.microsoft.com/User.Read", "https://graph.microsoft.com/GroupMember.Read.All", "https://graph.microsoft.com/Mail.Send"]
-REDIRECT_URI = os.getenv("REDIRECT_URI")  # Default for local; set in env for Render
+REDIRECT_URI = os.getenv("REDIRECT_URI")  # Set in env for Render
 
 msal_app = ConfidentialClientApplication(CLIENT_ID, authority=AUTHORITY, client_credential=CLIENT_SECRET)
 
@@ -177,22 +170,30 @@ def inject_signature(email_bytes: bytes, sig_html: str) -> bytes:
         msg.set_payload(msg.get_payload() + "<br><br>" + sig_html)
     return msg.as_bytes()
 
-async def forward_email(client: GraphServiceClient, from_email: str, to_emails: list, processed_email: bytes):
+async def forward_email(access_token: str, from_email: str, to_emails: list, processed_email: bytes):
     parser = BytesParser()
     msg = parser.parsebytes(processed_email)
-    message = Message()
-    message.subject = msg["subject"] or "No Subject"
-    body_content = ""
-    if msg.is_multipart():
-        for part in msg.get_payload():
-            if part.get_content_type() == 'text/html':
-                body_content = part.get_payload(decode=True).decode()
-                break
-    else:
-        body_content = msg.get_payload(decode=True).decode()
-    message.body = MessageBody(body_type=BodyType.Html, content=body_content)
-    message.to_recipients = [Recipient(email_address=EmailAddress(address=t)) for t in to_emails]
-    await client.me.send_mail(message=message, save_to_sent_items=True)
+    headers = {
+        "Authorization": f"Bearer {access_token}",
+        "Content-Type": "application/json"
+    }
+    payload = {
+        "message": {
+            "subject": msg["subject"] or "No Subject",
+            "body": {
+                "contentType": "HTML",
+                "content": processed_email.decode('utf-8', errors='ignore')
+            },
+            "toRecipients": [{"emailAddress": {"address": t}} for t in to_emails],
+            "from": {"emailAddress": {"address": from_email}}  # Optional, Graph may override
+        },
+        "saveToSentItems": True
+    }
+    try:
+        resp = requests.post("https://graph.microsoft.com/v1.0/me/sendMail", headers=headers, json=payload)
+        resp.raise_for_status()
+    except requests.exceptions.HTTPError as e:
+        raise HTTPException(status_code=e.response.status_code, detail=f"Graph API error: {str(e)}")
 
 # Authentication Endpoints
 @app.get("/auth/login")
@@ -297,9 +298,7 @@ async def send_email(email: EmailSend, user_id: str, db: AsyncSession = Depends(
         raise HTTPException(404, "User not found")
     sig_html = await get_signature_for_user(db, user.id)
     full_body = f"{email.body}<br><br><div class='signature'>{sig_html}</div>"
-    tenant = await db.get(Tenant, user.tenant_id)
-    client = await get_graph_client(tenant.access_token)
-    await forward_email(client, user.email, [email.to], full_body.encode())
+    await forward_email(user.access_token, user.email, [email.to], full_body.encode())
     return {"message": "Email sent successfully"}
 
 # Email Proxy for Inbound
@@ -317,9 +316,7 @@ async def email_proxy(request: EmailProxyRequest, db: AsyncSession = Depends(get
         raise HTTPException(404, "User not found")
     sig_html = await get_signature_for_user(db, user.id)
     processed_email = inject_signature(email_bytes, sig_html)
-    tenant = await db.get(Tenant, user.tenant_id)
-    client = await get_graph_client(tenant.access_token)
-    await forward_email(client, request.from_email, request.to_emails, processed_email)
+    await forward_email(user.access_token, request.from_email, request.to_emails, processed_email)
     return {"message": "Email processed and forwarded"}
 
 # SMTP Handling (Disabled on Render)
@@ -337,10 +334,6 @@ async def start_smtp():
 async def startup():
     if os.getenv("ENV", "local") != "render":
         await start_smtp()
-
-async def get_graph_client(access_token: str):
-    credential = ClientSecretCredential(tenant_id="common", client_id=CLIENT_ID, client_secret=CLIENT_SECRET)
-    return GraphServiceClient(credential, {"access_token": access_token})
 
 if __name__ == "__main__":
     import uvicorn
