@@ -18,6 +18,7 @@ from email.mime.text import MIMEText
 from string import Template
 from base64 import b64decode
 import requests
+from sqlalchemy import select
 
 load_dotenv()
 
@@ -340,3 +341,4 @@ if __name__ == "__main__":
     import uvicorn
     port = int(os.getenv("PORT", 8000))
     uvicorn.run(app, host="0.0.0.0", port=port)
+
