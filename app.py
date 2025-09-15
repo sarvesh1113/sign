@@ -4,7 +4,7 @@ from dotenv import load_dotenv
 from fastapi import FastAPI, Depends, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse
-from sqlalchemy import Column, Integer, String, Text, ForeignKey, JSON, DateTime
+from sqlalchemy import Column, String, Text, ForeignKey, JSON, DateTime
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 from sqlalchemy.orm import sessionmaker, relationship
@@ -45,7 +45,7 @@ async def get_db():
 # Models
 class Tenant(Base):
     __tablename__ = "tenants"
-    id = Column(String, primary_key=True, index=True,default=lambda: str(uuid.uuid4()))
+    id = Column(String, primary_key=True, index=True, default=lambda: str(uuid.uuid4()))
     azure_tenant_id = Column(String, unique=True)
     token_expires = Column(DateTime)
 
@@ -58,15 +58,15 @@ class User(Base):
     job_title = Column(String)
     department = Column(String)
     groups = Column(JSON)
-    tenant_id = Column(Integer, ForeignKey("tenants.id"))
-    access_token = Column(Text)  # Added
-    refresh_token = Column(Text)  # Added
+    tenant_id = Column(String, ForeignKey("tenants.id"))  # Changed to String
+    access_token = Column(Text)
+    refresh_token = Column(Text)
     tenant = relationship("Tenant")
 
 class SignatureTemplate(Base):
     __tablename__ = "signature_templates"
     id = Column(String, primary_key=True, index=True, default=lambda: str(uuid.uuid4()))
-    tenant_id = Column(Integer, ForeignKey("tenants.id"))
+    tenant_id = Column(String, ForeignKey("tenants.id"))  # Changed to String
     name = Column(String)
     html_template = Column(Text)
     rules = Column(JSON)
@@ -99,7 +99,11 @@ async def refresh_access_token(user: User, db: AsyncSession):
     user.refresh_token = result.get("refresh_token")
     await db.commit()
 
-async def sync_user_data(user_id: int, db: AsyncSession):
+async def sync_user_data(user_id: str, db: AsyncSession):
+    try:
+        uuid_obj = uuid.UUID(user_id)
+    except ValueError:
+        raise HTTPException(400, "Invalid user_id: must be a valid UUID string")
     user = await db.get(User, user_id)
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
@@ -135,7 +139,11 @@ async def sync_user_data(user_id: int, db: AsyncSession):
         raise HTTPException(status_code=500, detail="Graph API error for groups: " + str(e))
     await db.commit()
 
-async def get_signature_for_user(db: AsyncSession, user_id: int) -> str:
+async def get_signature_for_user(db: AsyncSession, user_id: str) -> str:
+    try:
+        uuid_obj = uuid.UUID(user_id)
+    except ValueError:
+        raise HTTPException(400, "Invalid user_id: must be a valid UUID string")
     user = await db.get(User, user_id)
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
@@ -228,6 +236,7 @@ async def auth_callback(request: Request, code: str, db: AsyncSession = Depends(
     user = user.scalar()
     if not user:
         user = User(
+            id=str(uuid.uuid4()),  # Explicitly set UUID
             tenant_id=tenant.id,
             azure_user_id=azure_user_id,
             access_token=access_token,
@@ -247,7 +256,7 @@ async def auth_callback(request: Request, code: str, db: AsyncSession = Depends(
     # Sync directory data
     await sync_user_data(user.id, db)
 
-    return {"message": "Authenticated successfully", "user_id": str(user.id)}
+    return {"message": "Authenticated successfully", "user_id": user.id}
 
 # Health Checks
 @app.get("/")
@@ -266,7 +275,11 @@ class TemplateCreate(BaseModel):
 
 @app.post("/templates")
 async def create_template(template: TemplateCreate, user_id: str, db: AsyncSession = Depends(get_db)):
-    user = await db.get(User, uuid.UUID(user_id))
+    try:
+        uuid_obj = uuid.UUID(user_id)
+    except ValueError:
+        raise HTTPException(400, "Invalid user_id: must be a valid UUID string")
+    user = await db.get(User, user_id)
     if not user:
         raise HTTPException(404, "User not found")
     db_template = SignatureTemplate(
@@ -282,7 +295,11 @@ async def create_template(template: TemplateCreate, user_id: str, db: AsyncSessi
 
 @app.get("/templates")
 async def list_templates(user_id: str, db: AsyncSession = Depends(get_db)):
-    user = await db.get(User, uuid.UUID(user_id))
+    try:
+        uuid_obj = uuid.UUID(user_id)
+    except ValueError:
+        raise HTTPException(400, "Invalid user_id: must be a valid UUID string")
+    user = await db.get(User, user_id)
     if not user:
         raise HTTPException(404, "User not found")
     templates = await db.execute(select(SignatureTemplate).filter(SignatureTemplate.tenant_id == user.tenant_id))
@@ -296,10 +313,14 @@ class EmailSend(BaseModel):
 
 @app.post("/send_email")
 async def send_email(email: EmailSend, user_id: str, db: AsyncSession = Depends(get_db)):
-    user = await db.get(User, uuid.UUID(user_id))
+    try:
+        uuid_obj = uuid.UUID(user_id)
+    except ValueError:
+        raise HTTPException(400, "Invalid user_id: must be a valid UUID string")
+    user = await db.get(User, user_id)
     if not user:
         raise HTTPException(404, "User not found")
-    sig_html = await get_signature_for_user(db, user.id)
+    sig_html = await get_signature_for_user(db, user_id)
     full_body = f"{email.body}<br><br><div class='signature'>{sig_html}</div>"
     await forward_email(user.access_token, user.email, [email.to], full_body.encode())
     return {"message": "Email sent successfully"}
@@ -344,6 +365,3 @@ if __name__ == "__main__":
     import uvicorn
     port = int(os.getenv("PORT", 8000))
     uvicorn.run(app, host="0.0.0.0", port=port)
-
-
-
