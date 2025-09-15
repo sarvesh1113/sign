@@ -7,7 +7,6 @@ msal
 aiosmtpd
 python-dotenv
 pydantic
-email
 smtplib
 aiosmtplib
 starlette
