@@ -2,7 +2,7 @@ fastapi
 uvicorn
 sqlalchemy[asyncio]
 asyncpg
-msgraph-sdk>=2.0.0
+msgraph-sdk
 msal
 aiosmtpd
 python-dotenv
